@@ -1,5 +1,18 @@
 {
   "extends": "@react-native/typescript-config",
-  "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["**/node_modules", "**/Pods"]
+  "compilerOptions": {
+    "jsx": "react-jsx",                 // ✅ Required for <JSX /> support
+    "strict": true,                     // optional but safer
+    "esModuleInterop": true,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]                  // ✅ enables imports like "@/state/store"
+    },
+    "types": ["react", "react-native"]
+  },
+  "include": ["src", "App.tsx", "index.js"], // ✅ limits scope to your source
+  "exclude": ["node_modules", "Pods"]
 }

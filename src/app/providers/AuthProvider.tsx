@@ -1,12 +1,12 @@
 import { View, Text } from 'react-native'
 import React from 'react'
 
-const App = () => {
+const AuthProvider = () => {
   return (
     <View>
-      <Text>App</Text>
+      <Text>AuthProvider</Text>
     </View>
   )
 }
 
-export default App
+export default AuthProvider

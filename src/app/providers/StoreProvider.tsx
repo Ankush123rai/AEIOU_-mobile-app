@@ -1,12 +1,12 @@
 import { View, Text } from 'react-native'
 import React from 'react'
 
-const App = () => {
+const StoreProvider = () => {
   return (
     <View>
-      <Text>App</Text>
+      <Text>StoreProvider</Text>
     </View>
   )
 }
 
-export default App
+export default StoreProvider

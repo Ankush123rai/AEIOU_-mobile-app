@@ -1,12 +1,12 @@
 import { View, Text } from 'react-native'
 import React from 'react'
 
-const App = () => {
+const AdminQuestions = () => {
   return (
     <View>
-      <Text>App</Text>
+      <Text>AdminQuestions</Text>
     </View>
   )
 }
 
-export default App
+export default AdminQuestions
