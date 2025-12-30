@@ -11,11 +11,15 @@ import {
   BackHandler,
   Linking,
   Image,
-  Dimensions
+  Dimensions,
+  Modal,
+  SafeAreaView,
+  Platform,
 } from 'react-native';
 import YoutubePlayer from "react-native-youtube-iframe";
-import {launchCamera} from 'react-native-image-picker';
-import { Camera, useCameraDevices } from 'react-native-vision-camera';
+import ImagePicker, {launchCamera, launchImageLibrary} from 'react-native-image-picker';
+import Video from 'react-native-video';
+import {check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 import api from '../api/client';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -24,6 +28,228 @@ const fmt = (s) => {
   const m = Math.floor(s/60).toString().padStart(2,'0');
   const r = (s%60).toString().padStart(2,'0');
   return `${m}:${r}`;
+};
+
+const PermissionRequest = ({ onGranted, onDenied }) => {
+  const requestPermission = async () => {
+    let cameraPermission;
+    let microphonePermission;
+
+    if (Platform.OS === 'android') {
+      cameraPermission = await request(PERMISSIONS.ANDROID.CAMERA);
+      microphonePermission = await request(PERMISSIONS.ANDROID.RECORD_AUDIO);
+    } else {
+      cameraPermission = await request(PERMISSIONS.IOS.CAMERA);
+      microphonePermission = await request(PERMISSIONS.IOS.MICROPHONE);
+    }
+
+    if (cameraPermission === RESULTS.GRANTED && microphonePermission === RESULTS.GRANTED) {
+      onGranted();
+    } else {
+      onDenied();
+    }
+  };
+
+  return (
+    <View style={styles.permissionContainer}>
+      <Text style={styles.permissionTitle}>Camera & Microphone Required</Text>
+      <Text style={styles.permissionText}>
+        This feature requires camera and microphone access to record video responses.
+      </Text>
+      <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
+        <Text style={styles.permissionButtonText}>Allow Access</Text>
+      </TouchableOpacity>
+      <TouchableOpacity 
+        style={styles.permissionSettingsButton}
+        onPress={() => Linking.openSettings()}
+      >
+        <Text style={styles.permissionSettingsText}>Open Settings</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+const CameraModal = ({ 
+  visible, 
+  onClose, 
+  onRecordingComplete, 
+  maxDuration = 300,
+  taskTitle,
+  isFrontCamera = true
+}) => {
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const recordingIntervalRef = useRef(null);
+
+  const startRecording = async () => {
+    setIsRecording(true);
+    setRecordingTime(0);
+    
+    recordingIntervalRef.current = setInterval(() => {
+      setRecordingTime(prev => {
+        if (prev >= maxDuration) {
+          stopRecording();
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, 1000);
+  };
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+    }
+    
+    // Use ImagePicker to open camera for recording
+    const options = {
+      mediaType: 'video',
+      videoQuality: 'high',
+      durationLimit: maxDuration,
+      cameraType: 'front', // Force front camera
+      saveToPhotos: false,
+    };
+
+    launchCamera(options, (response) => {
+      console.log('Camera response:', response);
+      
+      if (response.didCancel) {
+        console.log('User cancelled recording');
+        Alert.alert('Recording cancelled', 'Recording was cancelled.');
+      } else if (response.errorCode) {
+        console.log('Camera Error: ', response.errorMessage);
+        Alert.alert('Error', response.errorMessage || 'Failed to record video.');
+      } else if (response.assets && response.assets[0]) {
+        const video = response.assets[0];
+        onRecordingComplete({
+          uri: video.uri,
+          type: video.type || 'video/mp4',
+          name: video.fileName || `recording_${Date.now()}.mp4`,
+          duration: recordingTime,
+        });
+      }
+    });
+  };
+
+  const handleClose = () => {
+    if (isRecording) {
+      Alert.alert(
+        'Stop Recording?',
+        'You are currently recording. Do you want to stop and save?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Stop & Save', 
+            onPress: () => {
+              stopRecording();
+              onClose();
+            }
+          },
+          { 
+            text: 'Discard', 
+            style: 'destructive',
+            onPress: () => {
+              setIsRecording(false);
+              if (recordingIntervalRef.current) {
+                clearInterval(recordingIntervalRef.current);
+              }
+              onClose();
+            }
+          },
+        ]
+      );
+    } else {
+      onClose();
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent={false}
+      statusBarTranslucent={true}
+      onRequestClose={handleClose}
+    >
+      <SafeAreaView style={styles.cameraModalContainer}>
+        <View style={styles.cameraModalHeader}>
+          <Text style={styles.cameraModalTitle}>Record Your Response</Text>
+          <TouchableOpacity 
+            onPress={handleClose}
+            style={styles.cameraModalCloseButton}
+          >
+            <Text style={styles.cameraModalCloseText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        
+        <View style={styles.cameraContent}>
+          <View style={styles.recordingInstructions}>
+            <Text style={styles.recordingInstructionsTitle}>{taskTitle}</Text>
+            <Text style={styles.recordingInstructionsText}>
+              Please speak clearly while looking at the camera. 
+              Maximum recording time: {fmt(maxDuration)}
+            </Text>
+          </View>
+
+          <View style={styles.recordingTimerContainer}>
+            <View style={[styles.recordingTimer, isRecording && styles.recordingActive]}>
+              <View style={styles.recordingIndicator}>
+                {isRecording && <View style={styles.recordingDot} />}
+                <Text style={styles.recordingIndicatorText}>
+                  {isRecording ? 'RECORDING' : 'READY TO RECORD'}
+                </Text>
+              </View>
+              <Text style={styles.recordingTimeText}>{fmt(recordingTime)}</Text>
+            </View>
+          </View>
+
+          <View style={styles.cameraControls}>
+            <TouchableOpacity 
+              style={[
+                styles.recordButton, 
+                isRecording ? styles.stopRecordingButton : styles.startRecordingButton
+              ]}
+              onPress={stopRecording}
+            >
+              <View style={isRecording ? styles.stopButtonInner : styles.recordButtonInner}>
+                {!isRecording && <Text style={styles.recordButtonText}>START</Text>}
+              </View>
+            </TouchableOpacity>
+            
+            {!isRecording && recordingTime > 0 && (
+              <TouchableOpacity 
+                style={styles.retakeButton}
+                onPress={() => {
+                  setRecordingTime(0);
+                  startRecording();
+                }}
+              >
+                <Text style={styles.retakeButtonText}>🔄 Re-record</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <View style={styles.recordingTips}>
+            <Text style={styles.tipsTitle}>💡 Tips for better recording:</Text>
+            <Text style={styles.tipsText}>• Find a quiet, well-lit place</Text>
+            <Text style={styles.tipsText}>• Look directly at the camera (front camera)</Text>
+            <Text style={styles.tipsText}>• Speak clearly and at a moderate pace</Text>
+            <Text style={styles.tipsText}>• Stay within the time limit</Text>
+            <Text style={styles.tipsText}>• Test audio before starting</Text>
+          </View>
+        </View>
+      </SafeAreaView>
+    </Modal>
+  );
 };
 
 export default function TakeModuleScreen({route, navigation}) {
@@ -37,15 +263,11 @@ export default function TakeModuleScreen({route, navigation}) {
   const [loading, setLoading] = useState(!examData);
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingTime, setRecordingTime] = useState(0);
-  const [cameraPermission, setCameraPermission] = useState(false);
-  const [microphonePermission, setMicrophonePermission] = useState(false);
-  const [showCamera, setShowCamera] = useState(false);
+  const [showCameraModal, setShowCameraModal] = useState(false);
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [permissionModalVisible, setPermissionModalVisible] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
-  const recordingIntervalRef = useRef(null);
-  const cameraRef = useRef(null);
   const playerRef = useRef(null);
 
   useEffect(() => {
@@ -66,44 +288,14 @@ export default function TakeModuleScreen({route, navigation}) {
   }, [hasUnsavedChanges]);
 
   useEffect(() => {
-    checkPermissions();
-  }, []);
-
-  useEffect(() => {
-    if (isRecording) {
-      recordingIntervalRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
-    } else {
-      if (recordingIntervalRef.current) {
-        clearInterval(recordingIntervalRef.current);
-      }
+    if (secondsLeft == null) return;
+    if (secondsLeft <= 0) { 
+      onSubmit(); 
+      return; 
     }
-
-    return () => {
-      if (recordingIntervalRef.current) {
-        clearInterval(recordingIntervalRef.current);
-      }
-    };
-  }, [isRecording]);
-
-  const checkPermissions = async () => {
-    const cameraStatus = await Camera.getCameraPermissionStatus();
-    const microphoneStatus = await Camera.getMicrophonePermissionStatus();
-    
-    setCameraPermission(cameraStatus === 'authorized');
-    setMicrophonePermission(microphoneStatus === 'authorized');
-  };
-
-  const requestPermissions = async () => {
-    const camera = await Camera.requestCameraPermission();
-    const microphone = await Camera.requestMicrophonePermission();
-    
-    setCameraPermission(camera === 'authorized');
-    setMicrophonePermission(microphone === 'authorized');
-    
-    return camera === 'authorized' && microphone === 'authorized';
-  };
+    const id = setTimeout(() => setSecondsLeft(s => s-1), 1000);
+    return () => clearTimeout(id);
+  }, [secondsLeft]);
 
   const loadExamData = async () => {
     try {
@@ -222,16 +414,6 @@ export default function TakeModuleScreen({route, navigation}) {
     }
   };
 
-  useEffect(() => {
-    if (secondsLeft == null) return;
-    if (secondsLeft <= 0) { 
-      onSubmit(); 
-      return; 
-    }
-    const id = setTimeout(() => setSecondsLeft(s => s-1), 1000);
-    return () => clearTimeout(id);
-  }, [secondsLeft]);
-
   const selectAnswer = (taskId, answer) => {
     setAnswers(prev => ({...prev, [taskId]: answer}));
     setHasUnsavedChanges(true);
@@ -263,7 +445,6 @@ export default function TakeModuleScreen({route, navigation}) {
 
   const onPlayerReady = () => {
     setPlayerReady(true);
-    console.log('YouTube player ready');
   };
 
   const onPlayerError = (error) => {
@@ -281,14 +462,37 @@ export default function TakeModuleScreen({route, navigation}) {
     );
   };
 
-
   const takePhoto = async (taskId) => {
     try {
+      const granted = await checkPermissions();
+      
+      if (!granted) {
+        Alert.alert(
+          'Camera Permission Required',
+          'Camera permission is required to take photos.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { 
+              text: 'Grant Permission', 
+              onPress: async () => {
+                const requested = await requestPermissions();
+                if (requested) {
+                  takePhoto(taskId); // Retry after permission granted
+                }
+              }
+            }
+          ]
+        );
+        return;
+      }
+
       const result = await launchCamera({
         mediaType: 'photo',
         quality: 0.8,
         maxWidth: 1024,
         maxHeight: 1024,
+        cameraType: 'back',
+        saveToPhotos: false,
       });
 
       if (result.assets && result.assets[0]) {
@@ -307,10 +511,47 @@ export default function TakeModuleScreen({route, navigation}) {
 
         selectAnswer(taskId, `Photo taken: ${file.name}`);
         Alert.alert('Success', 'Photo captured successfully!');
+      } else if (result.didCancel) {
+        console.log('User cancelled photo capture');
+      } else if (result.errorCode) {
+        Alert.alert('Error', result.errorMessage || 'Failed to take photo');
       }
     } catch (error) {
       console.error('Camera error:', error);
       Alert.alert('Error', 'Failed to take photo. Please try again.');
+    }
+  };
+
+  const selectFromGallery = async (taskId) => {
+    try {
+      const result = await launchImageLibrary({
+        mediaType: 'photo',
+        quality: 0.8,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        selectionLimit: 1,
+      });
+
+      if (result.assets && result.assets[0]) {
+        const photo = result.assets[0];
+        const file = {
+          uri: photo.uri,
+          type: photo.type || 'image/jpeg',
+          name: photo.fileName || `photo_${Date.now()}.jpg`,
+          size: photo.fileSize || 0,
+        };
+
+        setUploadedFiles(prev => ({
+          ...prev,
+          [taskId]: [file]
+        }));
+
+        selectAnswer(taskId, `Photo uploaded: ${file.name}`);
+        Alert.alert('Success', 'Photo uploaded successfully!');
+      }
+    } catch (error) {
+      console.error('Gallery error:', error);
+      Alert.alert('Error', 'Failed to select photo from gallery.');
     }
   };
 
@@ -327,46 +568,87 @@ export default function TakeModuleScreen({route, navigation}) {
     selectAnswer(taskId, updatedFiles.length > 0 ? `Uploaded files: ${fileNames}` : '');
   };
 
-  const startRecording = async (taskId) => {
-    if (!cameraPermission || !microphonePermission) {
-      const granted = await requestPermissions();
-      if (!granted) {
-        Alert.alert(
-          'Permissions Required',
-          'Camera and microphone permissions are required to record video responses.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { 
-              text: 'Open Settings', 
-              onPress: () => Linking.openSettings() 
-            }
-          ]
-        );
-        return;
-      }
+  const checkPermissions = async () => {
+    let cameraPermission;
+    let microphonePermission;
+
+    if (Platform.OS === 'android') {
+      cameraPermission = await check(PERMISSIONS.ANDROID.CAMERA);
+      microphonePermission = await check(PERMISSIONS.ANDROID.RECORD_AUDIO);
+    } else {
+      cameraPermission = await check(PERMISSIONS.IOS.CAMERA);
+      microphonePermission = await check(PERMISSIONS.IOS.MICROPHONE);
     }
 
-    setShowCamera(true);
-    setIsRecording(true);
-    setRecordingTime(0);
+    const granted = cameraPermission === RESULTS.GRANTED && microphonePermission === RESULTS.GRANTED;
+    setPermissionGranted(granted);
+    return granted;
   };
 
-  const stopRecording = async (taskId) => {
-    setIsRecording(false);
-    setShowCamera(false);
+  const requestPermissions = async () => {
+    let cameraPermission;
+    let microphonePermission;
+
+    if (Platform.OS === 'android') {
+      cameraPermission = await request(PERMISSIONS.ANDROID.CAMERA);
+      microphonePermission = await request(PERMISSIONS.ANDROID.RECORD_AUDIO);
+    } else {
+      cameraPermission = await request(PERMISSIONS.IOS.CAMERA);
+      microphonePermission = await request(PERMISSIONS.IOS.MICROPHONE);
+    }
+
+    const granted = cameraPermission === RESULTS.GRANTED && microphonePermission === RESULTS.GRANTED;
+    setPermissionGranted(granted);
+    return granted;
+  };
+
+  const startRecording = async () => {
+    const granted = await checkPermissions();
     
-    const recordingUrl = `recording_${taskId}_${Date.now()}.mp4`;
+    if (!granted) {
+      Alert.alert(
+        'Permissions Required',
+        'Camera and microphone permissions are required to record video responses.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Grant Permission', 
+            onPress: async () => {
+              const requested = await requestPermissions();
+              if (requested) {
+                setShowCameraModal(true);
+              } else {
+                Alert.alert(
+                  'Permission Denied',
+                  'You need to grant camera and microphone permissions to record video.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { 
+                      text: 'Open Settings', 
+                      onPress: () => Linking.openSettings() 
+                    }
+                  ]
+                );
+              }
+            }
+          }
+        ]
+      );
+      return;
+    }
+
+    setShowCameraModal(true);
+  };
+
+  const handleRecordingComplete = (recording) => {
     setRecordings(prev => ({
       ...prev,
-      [taskId]: {
-        url: recordingUrl,
-        duration: recordingTime
-      }
+      [currentTask._id]: recording
     }));
-    
-    selectAnswer(taskId, `Video recording completed - ${fmt(recordingTime)}`);
+
+    selectAnswer(currentTask._id, `Video recording completed - ${fmt(recording.duration)}`);
     Alert.alert('Recording Saved', 'Your video response has been recorded successfully.');
-    setRecordingTime(0);
+    setShowCameraModal(false);
   };
 
   const retryRecording = (taskId) => {
@@ -376,7 +658,6 @@ export default function TakeModuleScreen({route, navigation}) {
       return newRecordings;
     });
     selectAnswer(taskId, '');
-    setShowCamera(false);
   };
 
   const showExitConfirmation = () => {
@@ -447,6 +728,7 @@ export default function TakeModuleScreen({route, navigation}) {
       console.log('Submitting responses:', responses);
       payload.append('responses', JSON.stringify(responses));
 
+      // Add uploaded files for writing
       if (module === 'writing') {
         for (const [taskId, files] of Object.entries(uploadedFiles)) {
           files.forEach((file, index) => {
@@ -456,38 +738,56 @@ export default function TakeModuleScreen({route, navigation}) {
                 type: file.type || 'application/octet-stream',
                 name: file.name || `file_${index}`,
               };
-              payload.append(`files`, fileObject);
-              payload.append(`fileTasks`, taskId);
+              payload.append('files', fileObject);
+              payload.append('fileTasks', taskId);
             }
           });
         }
       }
 
+      // Add recordings for speaking
       if (module === 'speaking') {
         Object.entries(recordings).forEach(([taskId, recording]) => {
-          payload.append(`recordings`, taskId);
+          if (recording.uri) {
+            const fileObject = {
+              uri: recording.uri,
+              type: recording.type || 'video/mp4',
+              name: recording.name || `recording_${taskId}`,
+            };
+            payload.append('files', fileObject);
+            payload.append('fileTasks', taskId);
+          }
         });
       }
 
-      await api.post('/api/submissions', payload, {
+      console.log('Submitting payload with', Object.keys(uploadedFiles).length, 'files and', Object.keys(recordings).length, 'recordings');
+      
+      const response = await api.post('/api/submissions', payload, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
       });
       
+      console.log('Submission successful:', response.data);
       setHasUnsavedChanges(false);
       
       Alert.alert(
         'Submitted Successfully', 
         'Your responses have been submitted.',
-        [{ text: 'OK', onPress: () => navigation.reset({
-          index: 0, 
-          routes: [{name: 'StudentHome'}]
-        })}]
+        [{ 
+          text: 'OK', 
+          onPress: () => navigation.reset({
+            index: 0, 
+            routes: [{name: 'StudentHome'}]
+          })
+        }]
       );
     } catch (e) {
-      console.error('Submit error:', e);
-      Alert.alert('Submit failed', e?.response?.data?.error || e.message);
+      console.error('Submit error:', e.response?.data || e.message);
+      Alert.alert(
+        'Submit failed', 
+        e?.response?.data?.error || e.message || 'Failed to submit. Please try again.'
+      );
     }
   };
 
@@ -502,65 +802,6 @@ export default function TakeModuleScreen({route, navigation}) {
   };
 
   const moduleColor = getModuleColor();
-
-  const CameraView = () => {
-    const devices = useCameraDevices();
-    const device = devices.back;
-
-    if (!device) {
-      return (
-        <View style={styles.cameraContainer}>
-          <ActivityIndicator size="large" color="#FFFFFF" />
-          <Text style={styles.cameraText}>Loading camera...</Text>
-        </View>
-      );
-    }
-
-    return (
-      <View style={styles.cameraFullscreen}>
-        <Camera
-          ref={cameraRef}
-          style={StyleSheet.absoluteFill}
-          device={device}
-          isActive={true}
-          video={true}
-          audio={true}
-        />
-        
-        <View style={styles.cameraOverlay}>
-          <View style={styles.taskContentOverlay}>
-            <Text style={styles.overlayTitle}>{currentTask?.title}</Text>
-            {currentTask?.content && (
-              <Text style={styles.overlayContent}>{currentTask.content}</Text>
-            )}
-            {currentTask?.imageUrl && (
-              <Image 
-                source={{ uri: currentTask.imageUrl }} 
-                style={styles.overlayImage}
-                resizeMode="contain"
-              />
-            )}
-          </View>
-          
-          <View style={styles.recordingTimerOverlay}>
-            <View style={styles.recordingDot} />
-            <Text style={styles.recordingTimerText}>Recording: {fmt(recordingTime)}</Text>
-          </View>
-        </View>
-
-        <TouchableOpacity 
-          style={styles.stopRecordingButton}
-          onPress={() => stopRecording(currentTask._id)}
-        >
-          <View style={styles.stopButtonInner} />
-        </TouchableOpacity>
-      </View>
-    );
-  };
-
-  if (showCamera) {
-    return <CameraView />;
-  }
 
   if (loading) {
     return (
@@ -605,6 +846,16 @@ export default function TakeModuleScreen({route, navigation}) {
 
   return (
     <View style={styles.container}>
+      {/* Camera Recording Modal */}
+      <CameraModal
+        visible={showCameraModal}
+        onClose={() => setShowCameraModal(false)}
+        onRecordingComplete={handleRecordingComplete}
+        maxDuration={currentTask?.recordingTime || 300}
+        taskTitle={currentTask?.title}
+        isFrontCamera={true}
+      />
+
       <View style={[styles.header, { backgroundColor: moduleColor }]}>
         <View style={styles.headerBackground} />
         <TouchableOpacity onPress={handleBackPress} style={styles.backButton}>
@@ -702,13 +953,10 @@ export default function TakeModuleScreen({route, navigation}) {
                     <Text style={styles.videoLoadingText}>Loading video...</Text>
                   </View>
                 )}
-                
-               
               </View>
             </View>
           )}
 
-          {/* Fallback for non-YouTube media */}
           {currentTask.mediaUrl && module === 'listening' && !youtubeVideoId && (
             <View style={styles.mediaContainer}>
               <Text style={styles.sectionLabel}>🎵 Listening Material</Text>
@@ -721,13 +969,12 @@ export default function TakeModuleScreen({route, navigation}) {
             </View>
           )}
 
-
-
           <View style={styles.questionContainer}>
             <Text style={styles.sectionLabel}>❓ Question</Text>
             <Text style={styles.questionText}>{currentTask.question}</Text>
           </View>
 
+          {/* Speaking Module - Video Recording */}
           {module === 'speaking' && (
             <View style={styles.recordingContainer}>
               <Text style={styles.sectionLabel}>🎥 Record Your Response</Text>
@@ -737,12 +984,27 @@ export default function TakeModuleScreen({route, navigation}) {
                   <View style={styles.recordingStatus}>
                     <Text style={styles.recordingStatusText}>✅ Recording Complete ({fmt(currentRecording.duration)})</Text>
                   </View>
+                  {currentRecording.uri && (
+                    <Video
+                      source={{ uri: currentRecording.uri }}
+                      style={styles.videoPreview}
+                      paused={true}
+                      controls={true}
+                      resizeMode="contain"
+                    />
+                  )}
                   <View style={styles.recordingActions}>
+                    <TouchableOpacity 
+                      style={[styles.recordingButton, { backgroundColor: moduleColor }]}
+                      onPress={() => setShowCameraModal(true)}
+                    >
+                      <Text style={styles.recordingButtonText}>🔄 Re-record</Text>
+                    </TouchableOpacity>
                     <TouchableOpacity 
                       style={[styles.recordingButton, styles.retryButton]}
                       onPress={() => retryRecording(currentTask._id)}
                     >
-                      <Text style={styles.recordingButtonText}>🔄 Re-record</Text>
+                      <Text style={styles.recordingButtonText}>🗑️ Delete</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -750,20 +1012,20 @@ export default function TakeModuleScreen({route, navigation}) {
                 <View style={styles.recordingControls}>
                   <TouchableOpacity 
                     style={[styles.recordingButton, { backgroundColor: moduleColor }]}
-                    onPress={() => startRecording(currentTask._id)}
+                    onPress={startRecording}
                   >
                     <Text style={styles.recordingButtonText}>🎬 Start Recording</Text>
                   </TouchableOpacity>
                   <Text style={styles.recordingTip}>
-                    💡 Speak clearly with good lighting. Max: {fmt(currentTask.recordingTime || 300)}
+                    💡 Speak clearly while looking at the front camera. Max: {fmt(currentTask.recordingTime || 300)}
                   </Text>
                 </View>
               )}
             </View>
           )}
 
-          {/* Writing Module - File Upload */}
-          {(module === 'writing') && (
+          {/* Writing Module - Photo Upload */}
+          {module === 'writing' && (
             <View style={styles.fileUploadContainer}>
               <Text style={styles.sectionLabel}>📎 Submit Your Work</Text>
               
@@ -774,6 +1036,8 @@ export default function TakeModuleScreen({route, navigation}) {
                 >
                   <Text style={[styles.uploadOptionText, { color: moduleColor }]}>📸 Take Photo</Text>
                 </TouchableOpacity>
+                
+               
               </View>
 
               {currentTaskFiles.length > 0 && (
@@ -781,9 +1045,18 @@ export default function TakeModuleScreen({route, navigation}) {
                   <Text style={styles.uploadedFilesLabel}>Selected Files:</Text>
                   {currentTaskFiles.map((file, index) => (
                     <View key={index} style={styles.fileItem}>
-                      <Text style={styles.fileName} numberOfLines={1}>
-                        📄 {file.name}
-                      </Text>
+                      <Image 
+                        source={{ uri: file.uri }}
+                        style={styles.fileThumbnail}
+                      />
+                      <View style={styles.fileInfo}>
+                        <Text style={styles.fileName} numberOfLines={1}>
+                          📄 {file.name}
+                        </Text>
+                        <Text style={styles.fileSize}>
+                          {file.size ? Math.round(file.size / 1024) : 'Unknown'} KB
+                        </Text>
+                      </View>
                       <TouchableOpacity
                         style={styles.removeFileButton}
                         onPress={() => removeFile(currentTask._id, index)}
@@ -860,7 +1133,7 @@ export default function TakeModuleScreen({route, navigation}) {
               style={[styles.navButton, { backgroundColor: moduleColor }]}
               onPress={onSubmit}
             >
-              <Text style={styles.navButtonText}>Submit All 🚀</Text>
+              <Text style={styles.navButtonText}>Submit All</Text>
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
@@ -1009,6 +1282,7 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 3,
   },
+  // Task Card
   taskCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
@@ -1090,28 +1364,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginTop: 8,
   },
-  videoControls: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-    width: '100%',
-  },
-  videoControlButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 12,
-    borderRadius: 8,
-  },
-  videoControlButtonSecondary: {
-    backgroundColor: '#6B7280',
-  },
-  videoControlButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
   mediaUrlButton: {
     padding: 12,
     borderRadius: 8,
@@ -1121,14 +1373,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
-  },
-  contentContainer: {
-    marginBottom: 20,
-  },
-  contentText: {
-    fontSize: 16,
-    color: '#374151',
-    lineHeight: 24,
   },
   questionContainer: {
     marginBottom: 20,
@@ -1164,7 +1408,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   retryButton: {
-    backgroundColor: '#F59E0B',
+    backgroundColor: '#DC2626',
   },
   recordingPreview: {
     alignItems: 'center',
@@ -1179,9 +1423,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#10B981',
   },
+  videoPreview: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 12,
+    backgroundColor: '#000',
+  },
   recordingActions: {
     flexDirection: 'row',
     gap: 12,
+    width: '100%',
   },
   recordingTip: {
     fontSize: 14,
@@ -1190,64 +1442,81 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontStyle: 'italic',
   },
-  cameraFullscreen: {
+  // Camera Modal Styles
+  cameraModalContainer: {
     flex: 1,
     backgroundColor: '#000',
   },
-  cameraContainer: {
-    flex: 1,
+  cameraModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    paddingTop: Platform.OS === 'ios' ? 60 : 20,
+    backgroundColor: '#000',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  cameraModalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  cameraModalCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.1)',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#000',
   },
-  cameraText: {
+  cameraModalCloseText: {
     color: '#FFFFFF',
-    marginTop: 16,
-    fontSize: 16,
+    fontSize: 18,
+    fontWeight: '600',
   },
-  cameraOverlay: {
-    ...StyleSheet.absoluteFillObject,
+  cameraContent: {
+    flex: 1,
+    justifyContent: 'space-between',
     padding: 20,
   },
-  taskContentOverlay: {
-    backgroundColor: 'rgba(0,0,0,0.7)',
+  recordingInstructions: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
     padding: 16,
     borderRadius: 12,
     marginBottom: 20,
   },
-  overlayTitle: {
-    color: '#FFFFFF',
-    fontSize: 18,
+  recordingInstructionsTitle: {
+    fontSize: 16,
     fontWeight: '600',
+    color: '#FFFFFF',
     marginBottom: 8,
   },
-  overlayContent: {
-    color: '#FFFFFF',
+  recordingInstructionsText: {
     fontSize: 14,
+    color: 'rgba(255,255,255,0.8)',
     lineHeight: 20,
   },
-  overlayImage: {
-    width: '100%',
-    height: 120,
-    marginTop: 12,
-    borderRadius: 8,
+  recordingTimerContainer: {
+    alignItems: 'center',
+    marginBottom: 40,
   },
-  recordingTimerOverlay: {
-    position: 'absolute',
-    top: 20,
-    right: 20,
+  recordingTimer: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    borderRadius: 24,
+    minWidth: 200,
+  },
+  recordingActive: {
+    backgroundColor: 'rgba(220, 38, 38, 0.9)',
+  },
+  recordingIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(220, 38, 38, 0.9)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-  },
-  recordingTimerText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-    marginLeft: 6,
+    gap: 8,
+    marginBottom: 8,
   },
   recordingDot: {
     width: 8,
@@ -1255,22 +1524,127 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: '#FFFFFF',
   },
-  stopRecordingButton: {
-    position: 'absolute',
-    bottom: 40,
-    alignSelf: 'center',
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: 'rgba(220, 38, 38, 0.9)',
+  recordingIndicatorText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  recordingTimeText: {
+    color: '#FFFFFF',
+    fontSize: 32,
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Courier New' : 'monospace',
+  },
+  cameraControls: {
+    alignItems: 'center',
+    marginBottom: 40,
+  },
+  recordButton: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     justifyContent: 'center',
     alignItems: 'center',
+    marginBottom: 20,
+  },
+  startRecordingButton: {
+    backgroundColor: '#10B981',
+  },
+  stopRecordingButton: {
+    backgroundColor: '#DC2626',
+  },
+  recordButtonInner: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  recordButtonText: {
+    fontSize: 12,
   },
   stopButtonInner: {
     width: 30,
     height: 30,
     backgroundColor: '#FFFFFF',
     borderRadius: 4,
+  },
+  retakeButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 8,
+  },
+  retakeButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  recordingTips: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    padding: 16,
+    borderRadius: 12,
+  },
+  tipsTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 12,
+  },
+  tipsText: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.8)',
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  permissionContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#000',
+  },
+  permissionTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  permissionText: {
+    fontSize: 16,
+    color: 'rgba(255,255,255,0.8)',
+    textAlign: 'center',
+    marginBottom: 32,
+    lineHeight: 24,
+  },
+  permissionButton: {
+    backgroundColor: '#3B82F6',
+    paddingHorizontal: 32,
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    width: '80%',
+  },
+  permissionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  permissionSettingsButton: {
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+    width: '80%',
+  },
+  permissionSettingsText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    textAlign: 'center',
   },
   // File Upload Styles
   fileUploadContainer: {
@@ -1293,8 +1667,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   uploadOptionText: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
+    textAlign: 'center',
   },
   uploadedFilesContainer: {
     marginTop: 8,
@@ -1308,7 +1683,6 @@ const styles = StyleSheet.create({
   fileItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     padding: 12,
     backgroundColor: '#FFFFFF',
     borderRadius: 8,
@@ -1316,22 +1690,39 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E2E8F0',
   },
-  fileName: {
+  fileThumbnail: {
+    width: 50,
+    height: 50,
+    borderRadius: 6,
+    marginRight: 12,
+  },
+  fileInfo: {
     flex: 1,
-    fontSize: 14,
-    color: '#374151',
     marginRight: 8,
   },
+  fileName: {
+    fontSize: 14,
+    color: '#374151',
+    marginBottom: 4,
+  },
+  fileSize: {
+    fontSize: 12,
+    color: '#94A3B8',
+  },
   removeFileButton: {
-    padding: 4,
-    borderRadius: 4,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#FEF2F2',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   removeFileText: {
     color: '#DC2626',
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
   },
+  // Answer Input
   answerContainer: {
     marginTop: 8,
   },
@@ -1387,6 +1778,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     textAlignVertical: 'top',
   },
+  // Navigation
   navigationContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',

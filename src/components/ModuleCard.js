@@ -5,7 +5,7 @@ export default function ModuleCard({
   title, 
   status, 
   score,
-  statusType = 'start', // 'start', 'submitted', 'evaluated'
+  statusType = 'start', 
   onPress, 
   onViewResults,
   color = '#3B82F6', 
@@ -150,20 +150,7 @@ export default function ModuleCard({
         </View>
       </View>
 
-      {/* Additional status messages */}
-      {isCompleted && (
-        <View style={styles.footer}>
-          <Text style={styles.completedNote}>
-            Evaluation completed • Cannot retake this test
-          </Text>
-          {onViewResults && (
-            <TouchableOpacity onPress={onViewResults} style={styles.viewResultsButton}>
-              <Text style={styles.viewResultsText}>View Detailed Results →</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-      
+    
       {isSubmitted && (
         <Text style={styles.submittedNote}>
           Waiting for teacher evaluation • Check back later
@@ -176,11 +163,6 @@ export default function ModuleCard({
         </Text>
       )}
 
-      {/* {disabled && !isLocked && (
-        <Text style={styles.disabledNote}>
-          Complete your profile to start assessment
-        </Text>
-      )} */}
     </TouchableOpacity>
   );
 }
